@@ -3,7 +3,9 @@ WORKDIR /app
 COPY package*.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
-RUN npm ci
+RUN npm ci --include=optional
+# Fail early if a platform-specific bundler dependency is missing.
+RUN node -e "require('rollup'); require('esbuild')"
 COPY apps/web apps/web
 RUN npm run build -w @fufuyun-homework/web
 

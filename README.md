@@ -160,3 +160,15 @@ bash scripts/backup.sh
 7. iPad Safari 横竖屏、原图放大、打印预览和实际打印机实测；微信真机执行上传和发布。
 
 MySQL 联调、Docker 镜像构建、真实 Kimi 调用和微信 / iPad 真机验证，需相应环境和凭据；本地没有这些条件时不得视为已验证。
+
+## Linux 构建缺少 Rollup 原生依赖
+
+若日志提示缺少 `@rollup/rollup-linux-x64-gnu`，先更新到包含完整跨平台锁文件的版本，再重新构建。Dockerfile 显式安装可选依赖，并在前端编译前检查 Rollup / esbuild；回归测试检查锁文件是否包含各平台原生依赖。不要只在有旧 `node_modules` 的目录里删除锁文件重装，这可能再次丢失其他平台条目，参见 [npm 上游问题 #4828](https://github.com/npm/cli/issues/4828)。
+
+```bash
+git pull --ff-only
+sudo docker compose build --no-cache api web
+sudo docker compose up -d
+```
+
+重建应用不需要停止现有 MySQL，也不需要删除附件卷。
