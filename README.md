@@ -1,5 +1,7 @@
 # fufuyun-homework
 
+服务家长和孩子之间的作业
+
 GitHub 仓库和部署项目统一命名为 `fufuyun-homework`，服务器建议目录为 `/opt/fufuyun-homework`。数据库名及账号继续使用 `homework_assistant`，现有 MySQL 容器和外部网络名称不随项目改名。若曾以旧 Compose 项目名部署，切换名称前需迁移或复用原附件卷，避免新项目创建空卷；不要删除原数据卷。
 
 家长微信小程序 + iPad 网页 + Fastify 服务端。复用已有 MySQL 8.3，单家庭私用，父母共用一个家长密码，多个孩子独立完成状态。**代码首版；尚未连接你的服务器或真实 Kimi、微信账号。**
