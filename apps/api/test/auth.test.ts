@@ -1,0 +1,4 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {buildApp} from '../src/app.js';
+test('protected resources reject anonymous access; password checks do not expose config',async()=>{process.env.PARENT_PASSWORD='test-password-long-enough';const app=buildApp();try{for(const path of ['/api/children','/api/imports','/api/assignments','/api/attachments/123','/api/devices']){const r=await app.inject({url:path});assert.equal(r.statusCode,401);assert.equal(r.json().message,'请先登录或绑定设备');}const r=await app.inject({url:'/api/auth/login',method:'POST',payload:{password:'wrong'}});assert.equal(r.statusCode,401);assert.ok(!r.body.includes(process.env.PARENT_PASSWORD));const invalid=await app.inject({url:'/api/auth/login',method:'POST',payload:{password:42}});assert.equal(invalid.statusCode,400);}finally{await app.close();}});

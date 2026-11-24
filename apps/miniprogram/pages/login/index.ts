@@ -1,0 +1,2 @@
+import {api,report} from '../../api';
+Page({data:{password:'',busy:false},onLoad(){if(wx.getStorageSync('token'))wx.reLaunch({url:'/pages/home/index'});},input(e:any){this.setData({password:e.detail.value});},async login(){if(this.data.busy)return;this.setData({busy:true});try{const r=await api('/auth/login','POST',{password:this.data.password});wx.setStorageSync('token',r.token);wx.reLaunch({url:'/pages/home/index'});}catch(e){report(e);}finally{this.setData({busy:false,password:''});}}});

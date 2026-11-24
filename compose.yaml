@@ -1,0 +1,53 @@
+name: fufuyun-homework
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    environment:
+      DB_HOST: ${DB_HOST:-homework_mysql_prod}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_NAME: ${DB_NAME:-homework_assistant}
+      DB_USER: ${DB_USER:-homework_assistant}
+      DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD}
+      PARENT_PASSWORD: ${PARENT_PASSWORD:?set PARENT_PASSWORD}
+      MOONSHOT_API_KEY: ${MOONSHOT_API_KEY:-}
+      MOONSHOT_BASE_URL: ${MOONSHOT_BASE_URL:-https://api.moonshot.cn/v1}
+      MOONSHOT_MODEL: ${MOONSHOT_MODEL:-kimi-k2.5}
+    volumes:
+      - attachments:/app/data
+    networks: [default, existing_mysql]
+    mem_limit: 512m
+    cpus: 1.0
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3100/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    restart: unless-stopped
+    ports:
+      - '${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-52880}:80'
+    depends_on:
+      api:
+        condition: service_healthy
+    mem_limit: 128m
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: '3'}
+networks:
+  existing_mysql:
+    external: true
+    name: ${MYSQL_NETWORK:?set MYSQL_NETWORK to existing MySQL network}
+volumes:
+  attachments:

@@ -1,0 +1,69 @@
+import Fastify from 'fastify';
+import multipart from '@fastify/multipart';
+import rateLimit from '@fastify/rate-limit';
+import {randomBytes,randomUUID,createHash,timingSafeEqual} from 'node:crypto';
+import {mkdir,writeFile,readFile,unlink} from 'node:fs/promises';
+import {resolve} from 'node:path';
+import {z,ZodError} from 'zod';
+import {pool,rows,run,transaction} from './db.js';
+import {day,item,resultSchema,HttpError,extractText} from './domain.js';
+type Session={family_id:string;role:'parent'|'child';child_id:string|null};
+declare module 'fastify' {interface FastifyRequest {session:Session}}
+const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
+const id=z.string().uuid();
+const decoded=(v:any)=>typeof v==='string'?JSON.parse(v):v;
+const importView=(v:any)=>({...v,child_ids:decoded(v.child_ids),result:v.result?decoded(v.result):null});
+const childId=(s:string)=>id.parse(s);
+const dataDir=resolve(process.env.DATA_DIR??'./data');
+export function buildApp(){
+ const app=Fastify({logger:{redact:['req.headers.authorization','req.headers.cookie']},bodyLimit:1024*1024,trustProxy:false});
+ app.register(multipart,{limits:{files:5,fileSize:8*1024*1024,fields:4,fieldSize:200000,parts:9}});
+ app.register(rateLimit,{max:180,timeWindow:'1 minute'});
+ app.decorateRequest('session',{getter(){return (this as any)._session;},setter(value:Session){(this as any)._session=value;}});
+ const parent=(req:any)=>{if(req.session.role!=='parent')throw new HttpError(403,'仅家长可操作');};
+ async function ownChildren(ids:string[],family:string,db:any=pool){const found=await rows(`SELECT id FROM children WHERE family_id=? AND id IN (${ids.map(()=>'?').join(',')})`,[family,...ids],db);if(found.length!==ids.length)throw new HttpError(400,'孩子归属无效或重复');}
+ async function session(family:string,role:'parent'|'child',child:string|null){const token=randomBytes(32).toString('base64url');await run('INSERT INTO sessions(token_hash,family_id,role,child_id,expires_at) VALUES(?,?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 90 DAY))',[hash(token),family,role,child]);return {token,role,childId:child};}
+ app.setErrorHandler((error,req,reply)=>{if(error instanceof ZodError)return reply.code(400).send({message:'输入不符合要求',details:error.issues.map(i=>({path:i.path,message:i.message}))});if(error instanceof SyntaxError)return reply.code(400).send({message:'JSON 格式无效'});const code=error instanceof Error&&'statusCode' in error?Number(error.statusCode):500;if(code>=500)req.log.error({err:error},'Request failed');return reply.code(code).send({message:code>=500?'服务暂时不可用，请稍后重试':error instanceof Error?error.message:'请求失败'});});
+ app.addHook('preHandler',async req=>{
+  if(['/api/health','/api/auth/login','/api/auth/pair'].includes(req.url.split('?')[0]))return;
+  const token=req.headers.authorization?.replace(/^Bearer /,'');if(!token)throw new HttpError(401,'请先登录或绑定设备');
+  const [s]=await rows<Session>('SELECT family_id,role,child_id FROM sessions WHERE token_hash=? AND expires_at>UTC_TIMESTAMP()',[hash(token)]);if(!s)throw new HttpError(401,'登录已过期，请重新登录');req.session=s;
+ });
+ app.get('/api/health',async()=>{await rows('SELECT 1');return {ok:true};});
+ app.post('/api/auth/login',{config:{rateLimit:{max:8,timeWindow:'1 minute'}}},async req=>{const {password}=z.object({password:z.string().min(1).max(256)}).parse(req.body);const expected=process.env.PARENT_PASSWORD;if(!expected||expected.length<12)throw new HttpError(503,'请先配置至少 12 位的家长密码');if(!timingSafeEqual(Buffer.from(hash(password)),Buffer.from(hash(expected))))throw new HttpError(401,'密码不正确');return session('family','parent',null);});
+ app.post('/api/auth/logout',async req=>{await run('DELETE FROM sessions WHERE token_hash=?',[hash(req.headers.authorization!.replace(/^Bearer /,''))]);return {ok:true};});
+ app.get('/api/me',async req=>({...req.session,aiConfigured:!!process.env.MOONSHOT_API_KEY}));
+ app.get('/api/children',async req=>rows(`SELECT id,name,grade FROM children WHERE family_id=?${req.session.child_id?' AND id=?':''} ORDER BY created_at`,[req.session.family_id,...(req.session.child_id?[req.session.child_id]:[])]));
+ app.post('/api/children',async req=>{parent(req);const v=z.object({name:z.string().trim().min(1).max(40),grade:z.string().max(40).default('')}).parse(req.body);const cid=randomUUID();await run('INSERT INTO children(id,family_id,name,grade) VALUES(?,?,?,?)',[cid,req.session.family_id,v.name,v.grade]);return {id:cid,...v};});
+ app.post('/api/pairing',async req=>{parent(req);const {childId:cid}=z.object({childId:id.nullable().default(null)}).parse(req.body);if(cid)await ownChildren([cid],req.session.family_id);const code=randomBytes(6).toString('hex').toUpperCase();await run('DELETE FROM pairing_codes WHERE expires_at<UTC_TIMESTAMP()');await run('INSERT INTO pairing_codes(code_hash,family_id,child_id,expires_at) VALUES(?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 10 MINUTE))',[hash(code),req.session.family_id,cid]);return {code,expiresIn:600};});
+ app.post('/api/auth/pair',{config:{rateLimit:{max:10,timeWindow:'1 minute'}}},async req=>{const {code}=z.object({code:z.string().trim().length(12).transform(v=>v.toUpperCase())}).parse(req.body);const record=await transaction(async db=>{const [p]=await rows('SELECT * FROM pairing_codes WHERE code_hash=? AND expires_at>UTC_TIMESTAMP() FOR UPDATE',[hash(code)],db);if(!p)throw new HttpError(400,'配对码无效或已过期');await run('DELETE FROM pairing_codes WHERE code_hash=?',[hash(code)],db);return p;});return session(record.family_id,'child',record.child_id);});
+ app.get('/api/devices',async req=>{parent(req);return rows('SELECT token_hash AS id,child_id,created_at,expires_at FROM sessions WHERE family_id=? AND role=\'child\' AND expires_at>UTC_TIMESTAMP()',[req.session.family_id]);});
+ app.delete('/api/devices/:id',async req=>{parent(req);const tokenHash=z.string().regex(/^[a-f0-9]{64}$/).parse((req.params as any).id);await run('DELETE FROM sessions WHERE token_hash=? AND family_id=? AND role=\'child\'',[tokenHash,req.session.family_id]);return {ok:true};});
+ app.get('/api/imports',async req=>{parent(req);return (await rows('SELECT * FROM imports WHERE family_id=? ORDER BY created_at DESC LIMIT 100',[req.session.family_id])).map(importView);});
+ app.get('/api/imports/:id',async req=>{parent(req);const [v]=await rows('SELECT * FROM imports WHERE id=? AND family_id=?',[childId((req.params as any).id),req.session.family_id]);if(!v)throw new HttpError(404,'导入记录不存在');const attachments=await rows('SELECT id,name,mime FROM attachments WHERE import_id=?',[v.id]);return {...importView(v),attachments};});
+ app.post('/api/imports',async req=>{
+  parent(req);const fields:Record<string,string>={};const files:{id:string;name:string;mime:string;path:string}[]=[];await mkdir(dataDir,{recursive:true});let source='';const importId=randomUUID();let committed=false;
+  try {
+   for await(const part of req.parts()){
+    if(part.type==='field'){if(typeof part.value==='string')fields[part.fieldname]=part.value;continue;}
+    const bytes=await part.toBuffer();if(part.file.truncated)throw new HttpError(413,'单个文件不能超过 8MB');
+    let mime='';if(bytes.subarray(0,3).equals(Buffer.from([255,216,255])))mime='image/jpeg';else if(bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))mime='image/png';else if(bytes.subarray(0,4).toString()==='RIFF'&&bytes.subarray(8,12).toString()==='WEBP')mime='image/webp';
+    if(!mime){source+='\n'+extractText(part.filename,bytes);mime='text/plain';}
+    const aid=randomUUID();const path=resolve(dataDir,aid);await writeFile(path,bytes,{flag:'wx'});files.push({id:aid,name:part.filename.slice(0,255),mime,path});
+   }
+   const workDate=day.parse(fields.workDate);const ids=z.array(id).min(1).max(20).parse(JSON.parse(fields.childIds??'[]'));await ownChildren(ids,req.session.family_id);
+   source=z.string().max(50000).parse((fields.text??'')+source);if(!source.trim()&&!files.some(f=>f.mime.startsWith('image/')))throw new HttpError(400,'请粘贴消息或上传截图 / 文件');
+   await transaction(async db=>{await run('INSERT INTO imports(id,family_id,child_ids,work_date,source_text) VALUES(?,?,?,?,?)',[importId,req.session.family_id,JSON.stringify(ids),workDate,source],db);for(const f of files)await run('INSERT INTO attachments(id,import_id,family_id,name,mime,path) VALUES(?,?,?,?,?,?)',[f.id,importId,req.session.family_id,f.name,f.mime,f.path],db);});committed=true;return {id:importId};
+  }finally {if(!committed)await Promise.all(files.map(f=>unlink(f.path).catch(()=>{})));}
+ });
+ app.put('/api/imports/:id',async req=>{parent(req);const iid=childId((req.params as any).id);const v=z.object({version:z.number().int().nonnegative(),result:resultSchema,childIds:z.array(id).min(1).max(20),workDate:day}).parse(req.body);await ownChildren(v.childIds,req.session.family_id);const r=await run("UPDATE imports SET result=?,child_ids=?,work_date=?,status='review',version=version+1,error=NULL WHERE id=? AND family_id=? AND version=? AND status IN ('review','failed')",[JSON.stringify(v.result),JSON.stringify(v.childIds),v.workDate,iid,req.session.family_id,v.version]);if(!r.affectedRows)throw new HttpError(409,'记录状态已变化，请刷新后重试');return {ok:true};});
+ app.post('/api/imports/:id/retry',async req=>{parent(req);const r=await run("UPDATE imports SET status='queued',error=NULL,version=version+1 WHERE id=? AND family_id=? AND status='failed'",[childId((req.params as any).id),req.session.family_id]);if(!r.affectedRows)throw new HttpError(409,'仅失败记录可重试');return {ok:true};});
+ app.post('/api/imports/:id/publish',async req=>{parent(req);const iid=childId((req.params as any).id);const {version}=z.object({version:z.number().int().nonnegative()}).parse(req.body);return transaction(async db=>{const [j]=await rows("SELECT * FROM imports WHERE id=? AND family_id=? FOR UPDATE",[iid,req.session.family_id],db);if(!j||j.status!=='review'||j.version!==version)throw new HttpError(409,'请保存并刷新草稿后再发布');const draft=resultSchema.parse(decoded(j.result));if(!draft.items.length)throw new HttpError(400,'没有可发布的作业');const ids:string[]=decoded(j.child_ids);await ownChildren(ids,req.session.family_id,db);for(const cid of ids)for(const i of draft.items)await run('INSERT INTO assignments(id,family_id,child_id,import_id,work_date,subject,content,due_date,materials) VALUES(?,?,?,?,?,?,?,?,?)',[randomUUID(),req.session.family_id,cid,iid,j.work_date,i.subject,i.content,i.dueDate,i.materials],db);await run("UPDATE imports SET status='published',version=version+1 WHERE id=?",[iid],db);return {ok:true,count:ids.length*draft.items.length};});});
+ app.post('/api/imports/:id/withdraw',async req=>{parent(req);await transaction(async db=>{const iid=childId((req.params as any).id);const [j]=await rows('SELECT status FROM imports WHERE id=? AND family_id=? FOR UPDATE',[iid,req.session.family_id],db);if(!j||j.status!=='published')throw new HttpError(409,'当前记录未发布');await run('DELETE FROM assignments WHERE import_id=? AND family_id=?',[iid,req.session.family_id],db);await run("UPDATE imports SET status='review',version=version+1 WHERE id=?",[iid],db);});return {ok:true};});
+ app.get('/api/assignments',async req=>{const q=z.object({childId:id,date:day.optional(),pending:z.enum(['true','false']).optional()}).parse(req.query);if(req.session.child_id&&req.session.child_id!==q.childId)throw new HttpError(403,'只能查看绑定孩子');await ownChildren([q.childId],req.session.family_id);return rows(`SELECT * FROM assignments WHERE family_id=? AND child_id=?${q.pending==='true'?' AND completed=FALSE':q.date?' AND work_date=?':''} ORDER BY work_date,subject,created_at LIMIT 1000`,[req.session.family_id,q.childId,...(q.pending!=='true'&&q.date?[q.date]:[])]);});
+ app.put('/api/assignments/:id/complete',async req=>{const aid=childId((req.params as any).id);const v=z.object({completed:z.boolean(),revision:z.number().int().positive()}).parse(req.body);const r=await run(`UPDATE assignments SET completed=?,updated=FALSE WHERE id=? AND family_id=? AND revision=?${req.session.child_id?' AND child_id=?':''}`,[v.completed,aid,req.session.family_id,v.revision,...(req.session.child_id?[req.session.child_id]:[])]);if(!r.affectedRows)throw new HttpError(409,'作业已变化，请刷新');return {ok:true};});
+ app.put('/api/assignments/:id',async req=>{parent(req);const v=item.extend({revision:z.number().int().positive()}).parse(req.body);const r=await run('UPDATE assignments SET subject=?,content=?,due_date=?,materials=?,completed=FALSE,updated=TRUE,revision=revision+1 WHERE id=? AND family_id=? AND revision=?',[v.subject,v.content,v.dueDate,v.materials,childId((req.params as any).id),req.session.family_id,v.revision]);if(!r.affectedRows)throw new HttpError(409,'作业已变化，请刷新');return {ok:true};});
+ app.get('/api/assignments/:id/attachments',async req=>{const aid=childId((req.params as any).id);const found=await rows(`SELECT import_id FROM assignments WHERE id=? AND family_id=?${req.session.child_id?' AND child_id=?':''}`,[aid,req.session.family_id,...(req.session.child_id?[req.session.child_id]:[])]);if(!found.length)throw new HttpError(404,'作业不存在');return rows('SELECT id,name,mime FROM attachments WHERE import_id=?',[found[0].import_id]);});
+ app.get('/api/attachments/:id',async(req,reply)=>{const aid=childId((req.params as any).id);const [a]=await rows('SELECT * FROM attachments WHERE id=? AND family_id=?',[aid,req.session.family_id]);if(!a)throw new HttpError(404,'附件不存在');if(req.session.role==='child'){const allowed=await rows(`SELECT id FROM assignments WHERE import_id=? AND family_id=?${req.session.child_id?' AND child_id=?':''} LIMIT 1`,[a.import_id,req.session.family_id,...(req.session.child_id?[req.session.child_id]:[])]);if(!allowed.length)throw new HttpError(403,'尚无权查看此附件');}return reply.header('Cache-Control','private, no-store').header('X-Content-Type-Options','nosniff').type(a.mime).send(await readFile(a.path));});
+ return app;
+}
