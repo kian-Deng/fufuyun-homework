@@ -1,0 +1,16 @@
+# Copy to project-root compose.override.yaml to enable direct public HTTPS.
+# Compose automatically loads that file on subsequent updates and backups.
+services:
+  web:
+    environment:
+      HTTPS_DOMAIN: ${HTTPS_DOMAIN:-homework.beetron.cn}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./deploy/Caddyfile.https:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+volumes:
+  caddy_data:
+  caddy_config:

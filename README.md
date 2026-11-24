@@ -103,6 +103,24 @@ curl --fail http://127.0.0.1:52880/api/health
 
 当前 Caddy 仅负责内部 HTTP、静态网页和 API 转发，TLS 由现有入口终止。不要把明文 HTTP 服务作为公网正式入口。未拿到服务器网络与域名信息前，不声称已经完成线上接入。
 
+## 可选：由本项目提供 homework.beetron.cn 的 HTTPS
+
+根域名 beetron.cn 不是本项目专用，作业助手仅配置 homework.beetron.cn，不添加根域名或 www 的站点规则。先新增 DNS A 记录 homework → 150.158.28.108，保留根域名原有记录。已确认现有 Nginx 映射到 52681 / 52682；标准 80 / 443 空闲时，可使用此方式替代上面的现有入口代理方案。域名 A 记录应指向服务器，若有 AAAA 记录也必须指向可达的本服务器；云安全组及启用的主机防火墙需要允许 TCP 80、443 入站。不占用或修改旧 Nginx 端口。
+
+```bash
+cd /opt/fufuyun-homework
+git pull --ff-only
+cp deploy/compose.https.yaml compose.override.yaml
+sudo docker compose config --quiet
+sudo docker compose run --rm --no-deps web caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+sudo docker compose up -d --no-deps web
+curl --max-time 20 https://homework.beetron.cn/api/health
+```
+
+首次证书签发可能需要等待，未成功时查看 `sudo docker compose logs --tail=80 web`。不要用 `curl -k` 跳过验证。Caddy 自动申请和续期证书，证书保存在本项目独立的 `caddy_data` 卷，参见 [Caddy 官方 HTTPS 说明](https://caddyserver.com/docs/quick-starts/https)。本机 `http://127.0.0.1:52880/api/health` 仍可使用。
+
+`compose.override.yaml` 是本机启用标记，已被 Git 忽略，后续普通 `docker compose` 命令会自动加载，无需重复指定 `-f`，原附件卷和 API 配置保持不变。若启用模板日后更新，核对后重新复制。其他域名可在服务器 `.env` 设置 `HTTPS_DOMAIN`。若要回到仅本机 HTTP，先将 `compose.override.yaml` 移到项目外备份，再重新创建 web 容器；不要删除数据卷。
+
 ## 备份、升级、恢复
 
 从项目根目录执行（Linux）：
