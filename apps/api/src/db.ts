@@ -1,4 +1,5 @@
 import mysql, { type PoolConnection, type RowDataPacket, type ResultSetHeader } from 'mysql2/promise';
+import {migrateTasksAndBilling} from './migrations.js';
 export const pool=mysql.createPool({host:process.env.DB_HOST??'127.0.0.1',port:Number(process.env.DB_PORT??3306),user:process.env.DB_USER,password:process.env.DB_PASSWORD,database:process.env.DB_NAME??'homework_assistant',connectionLimit:4,charset:'utf8mb4',timezone:'Z',dateStrings:true});
 type Executor=typeof pool|PoolConnection;
 export async function rows<T=Record<string,any>>(sql:string,values:any[]=[],db:Executor=pool):Promise<T[]> { const [r]=await db.execute<RowDataPacket[]>(sql,values); return r as T[]; }
@@ -20,6 +21,7 @@ export async function migrate() {
   ];
   for(const sql of tables) await run(sql,[],db);
   await run('INSERT IGNORE INTO schema_migrations(version) VALUES(1)',[],db);
+  await migrateTasksAndBilling(db);
   await run("INSERT IGNORE INTO families(id,name) VALUES('family','我的家庭')",[],db);
  } finally {await db.query('SELECT RELEASE_LOCK(?)',[`${process.env.DB_NAME??'homework_assistant'}:migrate`]);db.release();}
 }

@@ -17,6 +17,7 @@ services:
       MOONSHOT_API_KEY: ${MOONSHOT_API_KEY:-}
       MOONSHOT_BASE_URL: ${MOONSHOT_BASE_URL:-https://api.moonshot.cn/v1}
       MOONSHOT_MODEL: ${MOONSHOT_MODEL:-kimi-k3.1-pro}
+      KIMI_PRICE_TABLE_JSON: ${KIMI_PRICE_TABLE_JSON:-}
     volumes:
       - attachments:/app/data
     networks: [default, existing_mysql]
