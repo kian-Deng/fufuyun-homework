@@ -49,7 +49,7 @@ npm test
 npm run build
 ```
 
-Kimi 使用 Moonshot 的 Chat Completions 接口，通过服务端 `fetch` 调用，默认 `https://api.moonshot.cn/v1`、`kimi-k2.5`（关闭思考以获取直接 JSON 输出）。模型可通过 `MOONSHOT_MODEL` 更改，须确认账号对该模型有权限且支持图片与 JSON 输出。更换模型后应先用少量文字和截图验证，不在客户端配置密钥。不配置密钥可以手动整理，不提供伪造 AI 结果的回退。
+Kimi 使用 Moonshot 的 Chat Completions 接口，通过服务端 `fetch` 调用，默认 `https://api.moonshot.cn/v1`、`kimi-k3.1-pro`（以账号 `/models` 返回的可用模型为准）。模型可通过 `MOONSHOT_MODEL` 更改，须确认账号对该模型有权限且支持图片与 JSON 输出。更换模型后应先用少量文字和截图验证，不在客户端配置密钥。不配置密钥可以手动整理，不提供伪造 AI 结果的回退。
 
 官方接口参考：[Kimi 快速开始](https://platform.moonshot.cn/docs/guide/kimi-k2-5-quickstart)。平台可能跳转至新的文档域名；密钥需使用 Kimi 开放平台 API 密钥，而非聊天会员或其他产品凭据。
 

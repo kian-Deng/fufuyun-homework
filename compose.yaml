@@ -16,7 +16,7 @@ services:
       PARENT_PASSWORD: ${PARENT_PASSWORD:?set PARENT_PASSWORD}
       MOONSHOT_API_KEY: ${MOONSHOT_API_KEY:-}
       MOONSHOT_BASE_URL: ${MOONSHOT_BASE_URL:-https://api.moonshot.cn/v1}
-      MOONSHOT_MODEL: ${MOONSHOT_MODEL:-kimi-k2.5}
+      MOONSHOT_MODEL: ${MOONSHOT_MODEL:-kimi-k3.1-pro}
     volumes:
       - attachments:/app/data
     networks: [default, existing_mysql]
