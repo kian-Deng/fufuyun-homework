@@ -123,15 +123,42 @@ curl --max-time 20 https://homework.beetron.cn/api/health
 
 ## 备份、升级、恢复
 
+### 日常一键管理（推荐）
+
+首次取得脚本时，以持有 Git SSH 凭据的 `ubuntu` 用户执行一次 `git pull --ff-only`。以后在 `/opt/fufuyun-homework` 使用：
+
+```bash
+# 打开交互菜单
+bash scripts/manage.sh
+
+# 日常最常用命令
+bash scripts/manage.sh update       # 备份、更新、构建并发布
+bash scripts/manage.sh restart      # 不拉代码、不构建；重新创建服务加载 .env
+bash scripts/manage.sh status       # 状态、上次成功发布版本
+bash scripts/manage.sh logs api     # 持续查看日志，Ctrl+C 退出
+```
+
+其他命令：`deploy` 首次部署当前代码、`start` 启动、`stop` 停止本项目、`backup` 独立备份、`check` 本机健康检查、`help` 帮助。`update` 和 `deploy` 可添加 `--no-cache` 执行干净构建；普通更新复用构建缓存。
+
+不要给整个管理脚本加 sudo；脚本自动检测 Docker 权限并按需调用 sudo，Git 始终使用当前用户的凭据。Ubuntu 需要 Bash、Git、Docker Compose v2+、util-linux 中的 flock，通常已经具备；不需要在宿主机安装 Node.js。HTTPS 已启用的 `compose.override.yaml` 会被自动加载。
+
+更新流程：读取远端 → 检查可快进 → 备份旧版本数据库和附件并恢复 API → 快进合并 → 顺序构建 API / Web → 重新创建本项目服务 → 检查 API 和网页代理。构建阶段旧服务继续运行，备份和切换有短暂中断。脚本不会覆盖 `.env`、HTTPS 覆盖配置或本地代码修改，不会自动 stash、强推或删除数据卷。若备份、Git、构建或健康检查失败，会返回非零状态；备份失败会尝试恢复 API。API 停止时请先用 `start` 恢复再更新，首次部署用 `deploy`。
+
+脚本用 flock 防止同时运行多个更新、重启或备份任务。成功发布的版本和 UTC 时间记录在 Git 忽略的 `.deploy-state/last-release`。失败不自动回退数据库；构建失败不会替换旧容器，但代码可能已经拉到新版本。应用层健康检查不代替公网 DNS、TLS 和真机验证。不会自动清理备份或旧镜像。
+
+脚本验证：`bash scripts/test-manage.sh` 在临时目录使用真实本地 Git 仓库和模拟 Docker / sudo，覆盖正常更新、配置重载、备份失败恢复、构建失败、网络失败、本地修改保护、并发拒绝、首次部署和启动失败。它不操作生产 Docker 或真实数据库，不代替服务器实测。测试模拟 flock 的成功和拒绝路径，真实进程互斥依赖 Linux flock。
+
+### 备份与恢复
+
 从项目根目录执行（Linux）：
 
 ```bash
 bash scripts/backup.sh
 ```
 
-备份脚本读取你自己维护的 shell 兼容 `.env`；含空格或 shell 特殊字符的值要用单引号括起。备份时短暂停止**本项目 API**以保持数据库和附件一致，现有 MySQL 与其他应用继续运行；脚本退出时尝试重新启动本项目 API。输出包括 `database.sql.gz`、`attachments/`，需复制到服务器之外。备份含孩子资料和会话，妥善保存。该脚本依赖现有 MySQL 容器内的 `mysqldump`，默认容器名 `homework_mysql_prod`，可用 `MYSQL_CONTAINER` 覆盖。
+备份脚本从正在运行的 API 读取真实数据库连接信息，通过标准输入传给 MySQL 容器，不执行 `.env`，也不将密码打印或放进命令行参数。备份时短暂停止**本项目 API**以保持数据库和附件一致，现有 MySQL 与其他应用继续运行；脚本退出时尝试重新启动本项目 API。输出包括 `database.sql.gz`、`attachments/` 和成功标记 `COMPLETE`；没有 `COMPLETE` 的目录代表未完成的备份。需复制到服务器之外。备份含孩子资料和会话，妥善保存。该脚本依赖现有 MySQL 容器内的 `mysqldump`，默认容器名 `homework_mysql_prod`，可通过调用脚本前设置环境变量 `MYSQL_CONTAINER` 覆盖。
 
-更新前备份，再执行 `docker compose up -d --build`。不要执行 `docker compose down -v`，否则会删除本项目附件卷。保留旧镜像；数据库有结构变更时，不能只退镜像而忽略数据库兼容。
+日常更新使用 `bash scripts/manage.sh update` 完成备份和发布。不要执行 `docker compose down -v`，否则会删除本项目附件卷和证书卷。保留旧镜像；数据库有结构变更时，不能只退镜像而忽略数据库兼容。
 
 恢复必须由管理员确认目标为本项目库：停止本项目 API，将 SQL 导入**空的专用库**，把 `attachments/` 的文件复制回本项目附件卷，确认 Node 用户 UID 1000 可读写，配置相同 `DB_NAME` 后再启动。数据库中附件保存的是容器内 `/app/data/<uuid>` 路径，恢复时保持该路径。不要将 SQL 导入其他业务库。至少做一次独立库与独立附件卷的恢复演练，再依赖备份。
 

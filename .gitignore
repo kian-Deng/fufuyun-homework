@@ -8,3 +8,4 @@ backups/
 *.log
 project.private.config.json
 /compose.override.yaml
+/.deploy-state/
