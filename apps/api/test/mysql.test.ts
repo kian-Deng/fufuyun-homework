@@ -25,8 +25,8 @@ test('MySQL integration: publication, dedicated-device isolation, revisions, pai
   assert.equal((await billingSummary(manualId)).attempts.length,0);await request(`/api/imports/${manualId}/withdraw`,'POST');
   const unknownId=(await request('/api/imports/manual','POST',{text:'整理书桌',workDate:'2026-11-27',childIds:[a]})).json().id;
   assert.equal((await request(`/api/imports/${unknownId}/publish`,'POST',{version:0})).statusCode,400);
-  const unknown=(await request(`/api/imports/${unknownId}`)).json();unknown.result.items[0].subject='其他';
-  assert.equal((await request(`/api/imports/${unknownId}`,'PUT',{version:0,result:unknown.result,childIds:[a],workDate:'2026-11-27'})).statusCode,200);
+  const unknownDraft=(await request(`/api/imports/${unknownId}`)).json();unknownDraft.result.items[0].subject='其他';
+  assert.equal((await request(`/api/imports/${unknownId}`,'PUT',{version:0,result:unknownDraft.result,childIds:[a],workDate:'2026-11-27'})).statusCode,200);
   assert.equal((await request(`/api/imports/${unknownId}/publish`,'POST',{version:1})).statusCode,200);
   await request(`/api/imports/${unknownId}/withdraw`,'POST');
   // A family link is reusable on any device, without a session or pair-code exchange.
