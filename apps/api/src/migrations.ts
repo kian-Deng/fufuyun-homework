@@ -47,3 +47,10 @@ export async function migrateHouseholdTasks(db:PoolConnection){
   if(!index)await run('CREATE UNIQUE INDEX household_task_day ON assignments(household_task_id,child_id,work_date)',[],db);
   await run('INSERT IGNORE INTO schema_migrations(version) VALUES(4)',[],db);
 }
+
+export async function migrateHouseholdPublications(db:PoolConnection){
+  const [done]=await rows('SELECT version FROM schema_migrations WHERE version=5',[],db);if(done)return;
+  const [column]=await rows('SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME=?',['imports','allocation_rule'],db);
+  if(!column)await run('ALTER TABLE imports ADD COLUMN allocation_rule JSON NULL',[],db);
+  await run('INSERT IGNORE INTO schema_migrations(version) VALUES(5)',[],db);
+}

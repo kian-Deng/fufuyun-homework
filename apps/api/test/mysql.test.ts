@@ -36,7 +36,7 @@ test('MySQL integration: publication, dedicated-device isolation, revisions, pai
   assert.equal((await request('/api/family-link','POST',{})).statusCode,409);
   assert.equal((await request('/api/children','GET',undefined,shared)).json().length,2);
   assert.equal((await request('/api/me','GET',undefined,shared)).json().role,'child');
-  for(const route of ['/api/imports','/api/devices','/api/family-link','/api/household-tasks'])assert.equal((await request(route,'GET',undefined,shared)).statusCode,403);
+  for(const route of ['/api/imports','/api/devices','/api/family-link','/api/household-tasks','/api/household-tasks/publications'])assert.equal((await request(route,'GET',undefined,shared)).statusCode,403);
   assert.equal((await request('/api/imports/manual','POST',{text,workDate:'2026-11-27',childIds:[a]},shared)).statusCode,403);
   assert.equal((await request('/api/family-link','POST',{reset:true},shared)).statusCode,403);
   assert.equal((await request(`/api/assignments?childId=${randomUUID()}&view=child`,'GET',undefined,shared)).statusCode,400);
@@ -84,26 +84,32 @@ test('MySQL integration: publication, dedicated-device isolation, revisions, pai
   assert.equal((await request('/api/household-tasks/'+foreignTask,'PUT',{content:'越权修改',revision:1})).statusCode,409);
   assert.equal((await request('/api/household-tasks/'+foreignTask,'DELETE',{revision:1})).statusCode,409);
   assert.ok((await request('/api/household-tasks')).json().every((t:any)=>t.id!==foreignTask));
-  const allocation={taskIds:[hid],childIds:[a,b],startDate:'2026-11-23',endDate:'2026-11-29',weekdays:[1,3,5]};
+  const allocation={taskIds:[hid],childIds:[a,b],mode:'weekly',startDate:'2026-11-23',weeks:1,weekdays:[1,3,5]};
   assert.equal((await request('/api/household-tasks/assign','POST',allocation,child)).statusCode,403);
   assert.equal((await request('/api/household-tasks/assign','POST',{...allocation,childIds:[randomUUID()]})).statusCode,400);
   assert.equal((await request('/api/household-tasks/assign','POST',{...allocation,taskIds:[randomUUID()]})).statusCode,400);
   assert.equal((await request('/api/household-tasks/assign','POST',{...allocation,taskIds:[foreignTask]})).statusCode,400);
   const both=await Promise.all([request('/api/household-tasks/assign','POST',allocation),request('/api/household-tasks/assign','POST',allocation)]);
   assert.ok(both.every(r=>r.statusCode===200),both.map(r=>r.body).join());assert.equal(both.reduce((n,r)=>n+r.json().created,0),6);assert.equal(both.reduce((n,r)=>n+r.json().skipped,0),6);
+  const pubBefore=(await request('/api/household-tasks/publications')).json();assert.equal(pubBefore.items.length,2);assert.equal(pubBefore.items[0].mode,'weekly');assert.equal(pubBefore.items[0].weeks,1);assert.ok(pubBefore.items.every((p:any)=>p.total===3&&p.childName.startsWith('孩子')&&!isNaN(Date.parse(p.assignedAt))));
+  assert.equal((await request('/api/household-tasks/assign','POST',{...allocation,endDate:'2026-11-29'})).statusCode,400);
   const homeTasks=await rows('SELECT * FROM assignments WHERE household_task_id=?',[hid]);assert.equal(homeTasks.length,6);assert.equal(homeTasks[0].subject,'家庭任务');
   const daily=(await request('/api/assignments?childId='+a+'&date=2026-11-25')).json();assert.equal(daily.length,1);assert.equal(daily[0].content,'弹钢琴20分钟');
   assert.equal((await request('/api/assignments/'+daily[0].id+'/complete','PUT',{completed:true,revision:1},child)).statusCode,200);
   assert.equal((await request('/api/household-tasks/'+hid,'PUT',{content:'弹钢琴30分钟',revision:1})).statusCode,200);
   assert.equal((await request('/api/household-tasks/'+hid,'PUT',{content:'旧版本',revision:1})).statusCode,409);
   const [snapshot]=await rows('SELECT content,completed FROM assignments WHERE id=?',[daily[0].id]);assert.equal(snapshot.content,'弹钢琴20分钟');assert.equal(Number(snapshot.completed),1);
-  const future={...allocation,startDate:'2099-01-01',endDate:'2099-01-01',weekdays:[1,2,3,4,5,6,7]};assert.equal((await request('/api/household-tasks/assign','POST',future)).json().created,2);
+  const pubSnapshot=(await request('/api/household-tasks/publications')).json().items.find((p:any)=>p.childId===a);assert.equal(pubSnapshot.completed,1);assert.deepEqual(pubSnapshot.tasks,['弹钢琴20分钟']);
+  const future={taskIds:[hid],childIds:[a,b],mode:'range',startDate:'2099-01-01',endDate:'2099-01-01'};assert.equal((await request('/api/household-tasks/assign','POST',future)).json().created,2);
   const visible=(await request('/api/assignments?childId='+a+'&view=child','GET',undefined,child)).json();assert.ok(visible.every((t:any)=>t.work_date<'2099-01-01'));
   assert.equal((await request('/api/assignments?childId='+a+'&date=2099-01-01')).json().length,1);
   assert.equal((await request('/api/household-tasks/'+hid,'DELETE',{revision:2})).statusCode,200);
   assert.equal((await request('/api/household-tasks/assign','POST',allocation)).statusCode,400);
   assert.equal((await rows('SELECT id FROM assignments WHERE household_task_id=?',[hid])).length,8);
   await run('DELETE FROM assignments WHERE household_task_id=?',[hid]);
+  const retainedPublications=(await request('/api/household-tasks/publications')).json().items;assert.equal(retainedPublications.length,4);assert.ok(retainedPublications.every((p:any)=>p.total===0&&p.removed>0&&p.tasks.length===1));
+  const oldPublication=randomUUID();await run("INSERT INTO imports(id,family_id,child_ids,work_date,source_text,status,import_kind) VALUES(?,?,?,'2026-11-27','旧版发布','published','household')",[oldPublication,family,JSON.stringify([a])]);
+  const legacyPublication=(await request('/api/household-tasks/publications')).json().items.find((p:any)=>p.publicationId===oldPublication);assert.equal(legacyPublication.mode,'legacy');assert.deepEqual(legacyPublication.tasks,['旧版发布']);
   // Reserve under an import row lock: simultaneous requests must not both generate.
   const billed=randomUUID();await run("INSERT INTO imports(id,family_id,child_ids,work_date,source_text,status) VALUES(?,?,?,'2026-11-26','测试','running')",[billed,family,JSON.stringify([a])]);
   const price=priceFor('kimi-k3.1-pro');const cost=reserveCost(1000,price);
@@ -125,7 +131,7 @@ test('MySQL integration: publication, dedicated-device isolation, revisions, pai
   const legacy=randomUUID(),legacyTask=randomUUID();
   await run("INSERT INTO imports(id,family_id,child_ids,work_date,source_text,status) VALUES(?,?,?,'2026-11-24','旧记录','failed')",[legacy,family,JSON.stringify([a])]);
   await run("INSERT INTO assignments(id,family_id,child_id,import_id,work_date,subject,content,completed,revision) VALUES(?,?,?,?,'2026-11-24','语文','旧任务',TRUE,3)",[legacyTask,family,a,legacy]);
-  await run('DELETE FROM schema_migrations WHERE version=4');await migrate();await run('DELETE FROM schema_migrations WHERE version=2');await migrate();await migrate();
+  await run('DELETE FROM schema_migrations WHERE version=5');await migrate();await run('DELETE FROM schema_migrations WHERE version=4');await migrate();await run('DELETE FROM schema_migrations WHERE version=2');await migrate();await migrate();
   const [oldTask]=await rows('SELECT completed,priority,revision FROM assignments WHERE id=?',[legacyTask]);assert.equal(Number(oldTask.completed),1);assert.equal(oldTask.priority,'normal');assert.equal(oldTask.revision,3);
   assert.equal((await billingSummary(legacy)).legacyUsageUnknown,true);assert.equal((await request(`/api/imports/${legacy}/retry`,'POST')).statusCode,409);
  }finally{
