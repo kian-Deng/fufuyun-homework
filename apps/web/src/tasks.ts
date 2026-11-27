@@ -2,7 +2,8 @@ export type Task={id:string;priority?:string;due_date?:string|null;work_date:str
 export function subjectCounts(tasks:Task[]){
   const counts=new Map<string,number>();
   for(const task of tasks)counts.set(task.subject,(counts.get(task.subject)??0)+(task.completed?0:1));
-  return [...counts].map(([subject,pending])=>({subject,pending}));
+  const rank=(subject:string)=>{const index=['语文','数学','英语'].indexOf(subject);return index<0?3:index;};
+  return [...counts].map(([subject,pending])=>({subject,pending})).sort((a,b)=>rank(a.subject)-rank(b.subject));
 }
 export function filterTasks<T extends Task>(tasks:T[],subject:string):T[]{return subject?tasks.filter(t=>t.subject===subject):tasks;}
 export function sortTasks<T extends Task>(items:T[]):T[]{

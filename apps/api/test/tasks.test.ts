@@ -27,6 +27,11 @@ test('legacy tasks remain compatible; generated tasks require an explicit priori
  const result=parseGeneratedResult('{"items":[{"subject":"语文","content":"准备下周检查背诵","priority":"high"}]}');
  assert.equal(result.items[0].dueDate,null);assert.equal(result.items[0].priority,'high');
 });
+test('subject tabs prioritize Chinese, math and English, retaining the order of other subjects',()=>{
+ const tasks=['科学','英语','美术','数学','语文'].map((subject,index)=>({id:String(index),subject,completed:false,content:subject,work_date:'2026-11-27',revision:1}));
+ assert.deepEqual(subjectCounts(tasks).map(t=>t.subject),['语文','数学','英语','科学','美术']);
+ assert.deepEqual(tasks.map(t=>t.subject),['科学','英语','美术','数学','语文']);
+});
 test('priority tasks come first, with overdue and nearest dates before future or unknown dates',()=>{
  const task=(id:string,priority:string,due_date:string|null,completed=false)=>({id,priority,due_date,completed,subject:'语文',content:id,work_date:'2026-11-26',revision:1});
  const input=[task('normal','normal','2026-11-20'),task('unknown','high',null),task('future','high','2026-12-01'),task('done','high','2026-11-20',true),task('tomorrow','high','2026-11-27'),task('overdue','high','2026-11-25')];

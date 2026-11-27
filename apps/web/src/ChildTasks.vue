@@ -19,7 +19,7 @@ const pending=computed(()=>props.tasks.filter(t=>!t.completed).length);
 
 <template>
  <div class="child-task-heading"><span>{{pending?'还有 '+pending+' 项未完成':'未完成任务已清空'}}</span></div>
- <div class="subject-filters no-print" role="group" aria-label="筛选学科"><button :aria-pressed="subject===''" :class="{active:subject===''}" @click="subject=''">全部 {{pending}}</button><button v-for="s in subjects" :key="s.subject" :aria-pressed="subject===s.subject" :class="{active:subject===s.subject}" @click="subject=s.subject">{{s.subject}} {{s.pending}}</button></div>
+ <div v-if="subjects.length>1" class="subject-filters no-print" role="group" aria-label="筛选学科"><button :aria-pressed="subject===''" :class="{active:subject===''}" @click="subject=''">全部 {{pending}}</button><button v-for="s in subjects" :key="s.subject" :aria-pressed="subject===s.subject" :class="{active:subject===s.subject}" @click="subject=s.subject">{{s.subject}} {{s.pending}}</button></div>
  <section v-for="section in sections" :key="section.key" class="child-task-section" :class="{'priority-section':section.key==='high'}">
   <h2>{{section.title}} <small>{{section.items.length}} 项</small></h2>
   <p v-if="!section.items.length" class="child-empty">{{section.key==='high'?'优先任务都完成了，看看下面还有什么。':'暂无其他任务。'}}</p>

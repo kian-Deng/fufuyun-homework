@@ -2,6 +2,18 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {manualTasks} from '../src/manual.js';
 import {familyTokenFromHash,isFamilyEntry,initializeFamilyEntry,api,FAMILY_STORAGE_KEY} from '../../web/src/api.ts';
+test('subject headings classify tasks without adding a task or rewriting original wording',()=>{
+ const result=manualTasks('语文作业：\n1.复习1.2.3.8单元\n2.完成区本14课课后练','2026-11-27');
+ assert.deepEqual(result.items.map(t=>({subject:t.subject,content:t.content})),[
+  {subject:'语文',content:'复习1.2.3.8单元'},
+  {subject:'语文',content:'完成区本14课课后练'}
+ ]);
+ const mixed=manualTasks('语文作业：\n1.复习1.2.3.8单元\n注意复习范围\n数学：\n1.完成区本14课课后练\n英语作业：\n朗读两遍\n朗读两遍','2026-11-27');
+ assert.deepEqual(mixed.items.map(t=>t.subject),['语文','数学','英语','英语']);
+ assert.equal(mixed.items[0].content,'复习1.2.3.8单元\n注意复习范围');
+ assert.equal(mixed.items[2].content,mixed.items[3].content,'manual entry does not deduplicate or rewrite tasks');
+ assert.throws(()=>manualTasks('语文作业：','2026-11-27'),/填写任务/);
+});
 test('organized homework is split without inventing poems or using an AI provider',()=>{
  const text='1.复习1.2.3.8单元默写所有古诗（明天检查）\n2.小练笔：关键词：他是一头蓄势待发的小猎豹';
  const result=manualTasks(text,'2026-11-27');
