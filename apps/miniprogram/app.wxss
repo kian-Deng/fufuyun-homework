@@ -5,3 +5,5 @@ page{background:#f5f7f8;color:#233b36;font-size:30rpx;line-height:1.6;font-famil
 .bottom-dock{display:flex;gap:16rpx}.bottom-dock button{flex:1}.dock-page{padding-bottom:calc(200rpx + env(safe-area-inset-bottom))}
 
 .subject-tabs{white-space:nowrap;margin:8rpx 0 20rpx;width:100%}.subject-tab{display:inline-block;padding:16rpx 24rpx;background:#edf3ef;border-radius:16rpx;margin-right:12rpx;font-size:28rpx}.subject-tab.active{background:#315f53;color:#fff}
+
+.subject-picker{background:#f5f8f5;border:1rpx solid #dce6de;border-radius:14rpx;padding:20rpx;margin:12rpx 0 22rpx}.household-description{white-space:pre-wrap;overflow-wrap:anywhere}

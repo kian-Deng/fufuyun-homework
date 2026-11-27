@@ -1,6 +1,6 @@
 import { z } from 'zod';
 export const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(s => !isNaN(Date.parse(s)) && new Date(s).toISOString().slice(0,10) === s, '日期无效');
-export const item = z.object({subject:z.string().trim().min(1).max(30),content:z.string().trim().min(1).max(3000),priority:z.enum(['high','normal']).default('normal'),priorityReason:z.string().trim().max(200).default(''),dueDate:day.nullable().default(null),materials:z.string().max(500).default(''),warning:z.string().max(500).default('')});
+export const item = z.object({subject:z.string().trim().min(1).max(30),content:z.string().min(1).max(3000).refine(s=>!!s.trim(),'请填写任务内容'),priority:z.enum(['high','normal']).default('normal'),priorityReason:z.string().trim().max(200).default(''),dueDate:day.nullable().default(null),materials:z.string().max(500).default(''),warning:z.string().max(500).default('')});
 export const resultSchema = z.object({items:z.array(item).max(100),notices:z.array(z.string().max(2000)).max(30).default([])});
 export type Draft = z.infer<typeof resultSchema>;
 export class HttpError extends Error { constructor(public statusCode:number,message:string) {super(message);} }

@@ -37,3 +37,13 @@ export async function migrateFamilyLinksAndManual(db:PoolConnection){
   if(!column)await run("ALTER TABLE imports ADD COLUMN import_kind VARCHAR(10) NOT NULL DEFAULT 'ai'",[],db);
   await run('INSERT IGNORE INTO schema_migrations(version) VALUES(3)',[],db);
 }
+
+export async function migrateHouseholdTasks(db:PoolConnection){
+  const [done]=await rows('SELECT version FROM schema_migrations WHERE version=4',[],db);if(done)return;
+  await run(`CREATE TABLE IF NOT EXISTS household_tasks (id VARCHAR(36) PRIMARY KEY,family_id VARCHAR(36) NOT NULL,content TEXT NOT NULL,priority VARCHAR(10) NOT NULL DEFAULT 'normal',revision INT NOT NULL DEFAULT 1,archived BOOLEAN NOT NULL DEFAULT FALSE,created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,INDEX(family_id))`,[],db);
+  const [column]=await rows('SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME=?',['assignments','household_task_id'],db);
+  if(!column)await run('ALTER TABLE assignments ADD COLUMN household_task_id VARCHAR(36) NULL',[],db);
+  const [index]=await rows('SELECT INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND INDEX_NAME=?',['assignments','household_task_day'],db);
+  if(!index)await run('CREATE UNIQUE INDEX household_task_day ON assignments(household_task_id,child_id,work_date)',[],db);
+  await run('INSERT IGNORE INTO schema_migrations(version) VALUES(4)',[],db);
+}
