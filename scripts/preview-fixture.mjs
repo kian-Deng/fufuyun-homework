@@ -19,8 +19,21 @@ const server=createServer(async(req,res)=>{
   if(url.pathname==='/api/me')return send({role:parent?'parent':'child',child_id:null,aiConfigured:true});
   if(url.pathname==='/api/children')return send([{id:ids.child,name:'小明',grade:'三年级'},{id:ids.other,name:'小红',grade:'一年级'}]);
   if(url.pathname==='/api/assignments')return send(tasks.filter(t=>t.child_id===url.searchParams.get('childId')));
+  if(url.pathname.startsWith('/api/assignments/')&&['PUT','DELETE'].includes(req.method)&&!url.pathname.endsWith('/complete')){
+    const index=tasks.findIndex(t=>url.pathname==='/api/assignments/'+t.id);if(index<0)return send({message:'作业已删除'},409);
+    const body=JSON.parse(data);if(body.revision!==tasks[index].revision)return send({message:'版本冲突'},409);
+    if(req.method==='DELETE')tasks.splice(index,1);else tasks[index]={...tasks[index],...body,due_date:body.dueDate,completed:0,updated:1,revision:body.revision+1};return send({ok:true});
+  }
   if(url.pathname.endsWith('/complete')){const task=tasks.find(t=>url.pathname.includes(t.id));if(task)task.completed=JSON.parse(data).completed?1:0;return send({ok:true});}
   if(url.pathname.endsWith('/attachments'))return send([]);
+  if(url.pathname==='/api/imports/manual'){
+    const body=JSON.parse(data);job={...job,import_kind:'manual',status:'review',version:0,work_date:body.workDate,child_ids:body.childIds,source_text:body.text,result:{items:body.text.split(/\n/).filter(Boolean).map(content=>({subject:'语文',content,priority:'normal',priorityReason:'',dueDate:null,materials:'',warning:''})),notices:[]},billing:{budgetCny:.8,committedCny:0,legacyUsageUnknown:false,attempts:[]}};return send({id:ids.job});
+  }
+  if(url.pathname==='/api/imports/'+ids.job+'/publish'){
+    if(job.status!=='review')return send({message:'已发布'},409);
+    for(const child_id of job.child_ids)for(const item of job.result.items)tasks.push({...item,id:'preview-'+tasks.length,child_id,due_date:item.dueDate,work_date:job.work_date,completed:0,revision:1});job.status='published';return send({ok:true});
+  }
+  if(url.pathname==='/api/family-link')return send({enabled:false});
   if(url.pathname==='/api/imports')return send(req.method==='POST'?{id:ids.job}:[job]);
   if(url.pathname==='/api/imports/'+ids.job){if(req.method==='PUT'){const body=JSON.parse(data);job={...job,result:body.result,version:job.version+1};}return send(job);}
   if(url.pathname==='/api/devices')return send([]);

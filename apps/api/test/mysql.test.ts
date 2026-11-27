@@ -16,6 +16,25 @@ test('MySQL integration: publication, dedicated-device isolation, revisions, pai
   await migrate();await run('INSERT INTO families(id,name) VALUES(?,?)',[family,'测试家庭']);
   for(const [cid,name] of [[a,'孩子甲'],[b,'孩子乙']])await run('INSERT INTO children(id,family_id,name) VALUES(?,?,?)',[cid,family,name]);
   for(const [token,role,cid] of [[parent,'parent',null],[child,'child',a]])await run('INSERT INTO sessions(token_hash,family_id,role,child_id,expires_at) VALUES(?,?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 1 DAY))',[hash(token!),family,role,cid]);
+  // Direct entry creates a reviewable draft, with no AI attempt and zero recorded cost.
+  const text='1.复习1.2.3.8单元默写所有古诗（明天检查）\n2.小练笔：关键词：他是一头蓄势待发的小猎豹';
+  const direct=await request('/api/imports/manual','POST',{text,workDate:'2026-11-27',childIds:[a,b]});assert.equal(direct.statusCode,200,direct.body);
+  const manualId=direct.json().id;const manual=(await request(`/api/imports/${manualId}`)).json();assert.equal(manual.import_kind,'manual');assert.equal(manual.status,'review');assert.equal(manual.result.items.length,2);assert.equal(manual.billing.attempts.length,0);assert.equal(manual.billing.committedCny,0);
+  assert.equal((await request(`/api/imports/${manualId}/publish`,'POST',{version:0})).json().count,4);
+  assert.equal((await billingSummary(manualId)).attempts.length,0);await request(`/api/imports/${manualId}/withdraw`,'POST');
+  // A family link is reusable on any device, without a session or pair-code exchange.
+  const share=await request('/api/family-link','POST',{});assert.equal(share.statusCode,200,share.body);let shared=share.json().token;
+  const [stored]=await rows('SELECT token_hash FROM family_links WHERE family_id=?',[family]);assert.equal(stored.token_hash,hash(shared));assert.notEqual(stored.token_hash,shared);
+  const metadata=(await request('/api/family-link')).json();assert.equal(metadata.enabled,true);assert.equal(metadata.token,undefined);
+  assert.equal((await request('/api/family-link','POST',{})).statusCode,409);
+  assert.equal((await request('/api/children','GET',undefined,shared)).json().length,2);
+  assert.equal((await request('/api/me','GET',undefined,shared)).json().role,'child');
+  for(const route of ['/api/imports','/api/devices','/api/family-link'])assert.equal((await request(route,'GET',undefined,shared)).statusCode,403);
+  assert.equal((await request('/api/imports/manual','POST',{text,workDate:'2026-11-27',childIds:[a]},shared)).statusCode,403);
+  assert.equal((await request('/api/family-link','POST',{reset:true},shared)).statusCode,403);
+  assert.equal((await request(`/api/assignments?childId=${randomUUID()}&view=child`,'GET',undefined,shared)).statusCode,400);
+  const rotated=await request('/api/family-link','POST',{reset:true});assert.equal((await request('/api/me','GET',undefined,shared)).statusCode,401);shared=rotated.json().token;
+  assert.equal((await request('/api/me','GET',undefined,shared)).statusCode,200);
   const draft={items:[{subject:'数学',content:'第12页第1题',priority:'high',priorityReason:'明天上交',dueDate:null,materials:'',warning:''}],notices:[]};
   await run("INSERT INTO imports(id,family_id,child_ids,work_date,source_text,status,result) VALUES(?,?,?,'2026-11-24',?,'review',?)",[iid,family,JSON.stringify([a,b]),'测试消息',JSON.stringify(draft)]);
   await run('INSERT INTO attachments(id,import_id,family_id,name,mime,path) VALUES(?,?,?,?,?,?)',[attachment,iid,family,'test.png','image/png','not-a-real-file']);
@@ -25,6 +44,13 @@ test('MySQL integration: publication, dedicated-device isolation, revisions, pai
   const published=await request(`/api/imports/${iid}/publish`,'POST',{version:0});assert.equal(published.statusCode,200,published.body);assert.equal(published.json().count,2);
   assert.equal((await request(`/api/imports/${iid}/publish`,'POST',{version:0})).statusCode,409);
   const [assignment]=(await request(`/api/assignments?childId=${a}`)).json();
+  assert.equal((await request(`/api/assignments/${assignment.id}`,'DELETE',{revision:1},shared)).statusCode,403);
+  assert.equal((await request(`/api/assignments/${assignment.id}`,'DELETE',{revision:1},child)).statusCode,403);
+  assert.equal((await request(`/api/assignments/${assignment.id}/complete`,'PUT',{completed:true,revision:1},shared)).statusCode,200);
+  assert.equal((await request(`/api/assignments/${assignment.id}/complete`,'PUT',{completed:false,revision:1},shared)).statusCode,200);
+  assert.equal((await request('/api/family-link','DELETE')).statusCode,200);
+  assert.equal((await request('/api/me','GET',undefined,shared)).statusCode,401);
+  assert.equal((await request('/api/me','GET',undefined,child)).statusCode,200);
   assert.equal(assignment.priority,'high');assert.equal(assignment.priority_reason,'明天上交');
   assert.equal((await request(`/api/assignments?childId=${a}&view=child`,'GET',undefined,child)).json().length,1);
   assert.equal((await request(`/api/assignments/${assignment.id}/complete`,'PUT',{completed:true,revision:1},child)).statusCode,200);
@@ -32,6 +58,12 @@ test('MySQL integration: publication, dedicated-device isolation, revisions, pai
   assert.equal((await request(`/api/assignments/${assignment.id}`,'PUT',{...draft.items[0],content:'更新为第13页',revision:1})).statusCode,200);
   const [updated]=(await request(`/api/assignments?childId=${a}`)).json();assert.equal(Number(updated.completed),0);assert.equal(updated.revision,2);assert.equal(Number(updated.updated),1);assert.equal(updated.completed_at,null);
   assert.equal((await request(`/api/assignments/${assignment.id}/complete`,'PUT',{completed:true,revision:1},child)).statusCode,409);
+  assert.equal((await request(`/api/assignments/${assignment.id}`,'DELETE',{revision:1})).statusCode,409);
+  assert.equal((await request(`/api/assignments/${assignment.id}`,'DELETE',{revision:2})).statusCode,200);
+  assert.equal((await request(`/api/assignments/${assignment.id}`,'DELETE',{revision:2})).statusCode,409);
+  assert.equal((await request(`/api/assignments?childId=${a}`)).json().length,0);
+  assert.equal((await request(`/api/assignments?childId=${b}`)).json().length,1,'deleting one child task preserves the sibling copy');
+  assert.equal((await request(`/api/assignments/${assignment.id}/complete`,'PUT',{completed:true,revision:2},child)).statusCode,409);
   const pair=await request('/api/pairing','POST',{childId:a});const code=pair.json().code;assert.equal(code.length,12);
   const paired=await request('/api/auth/pair','POST',{code});assert.equal(paired.statusCode,200);assert.equal((await request('/api/auth/pair','POST',{code})).statusCode,400);
   const newToken=paired.json().token;assert.equal((await request(`/api/devices/${hash(newToken)}`,'DELETE')).statusCode,200);assert.equal((await request('/api/me','GET',undefined,newToken)).statusCode,401);
@@ -62,7 +94,7 @@ test('MySQL integration: publication, dedicated-device isolation, revisions, pai
   const [oldTask]=await rows('SELECT completed,priority,revision FROM assignments WHERE id=?',[legacyTask]);assert.equal(Number(oldTask.completed),1);assert.equal(oldTask.priority,'normal');assert.equal(oldTask.revision,3);
   assert.equal((await billingSummary(legacy)).legacyUsageUnknown,true);assert.equal((await request(`/api/imports/${legacy}/retry`,'POST')).statusCode,409);
  }finally{
-  for(const table of ['ai_attempts','assignments','attachments','imports','pairing_codes','sessions','children'])await run(`DELETE FROM ${table} WHERE family_id=?`,[family]).catch(()=>{});
+  for(const table of ['family_links','ai_attempts','assignments','attachments','imports','pairing_codes','sessions','children'])await run(`DELETE FROM ${table} WHERE family_id=?`,[family]).catch(()=>{});
   await run('DELETE FROM families WHERE id=?',[family]).catch(()=>{});await app.close();await pool.end();
  }
 });

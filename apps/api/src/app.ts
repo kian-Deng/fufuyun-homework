@@ -9,7 +9,8 @@ import {pool,rows,run,transaction} from './db.js';
 import {day,item,resultSchema,HttpError,extractText} from './domain.js';
 import {billingSummary} from './billing.js';
 import {MAX_ATTEMPTS,BUDGET_MICROS} from './budget.js';
-type Session={family_id:string;role:'parent'|'child';child_id:string|null};
+import {manualTasks} from './manual.js';
+type Session={family_id:string;role:'parent'|'child';child_id:string|null;family_link_id?:string};
 declare module 'fastify' {interface FastifyRequest {session:Session}}
 const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
 const id=z.string().uuid();
@@ -29,8 +30,12 @@ export function buildApp(){
  app.addHook('preHandler',async req=>{
   if(['/api/health','/api/auth/login','/api/auth/pair'].includes(req.url.split('?')[0]))return;
   const token=req.headers.authorization?.replace(/^Bearer /,'');if(!token)throw new HttpError(401,'请先登录或绑定设备');
-  const [s]=await rows<Session>('SELECT family_id,role,child_id FROM sessions WHERE token_hash=? AND expires_at>UTC_TIMESTAMP()',[hash(token)]);if(!s)throw new HttpError(401,'登录已过期，请重新登录');req.session=s;
+  const [session]=await rows<Session>('SELECT family_id,role,child_id FROM sessions WHERE token_hash=? AND expires_at>UTC_TIMESTAMP()',[hash(token)]);
+  if(session){req.session=session;return;}
+  if(token.startsWith('family_')){const [link]=await rows('SELECT family_id,id FROM family_links WHERE token_hash=?',[hash(token)]);if(link){req.session={family_id:link.family_id,role:'child',child_id:null,family_link_id:link.id};return;}}
+  throw new HttpError(401,token.startsWith('family_')?'家庭共享链接无效或已撤销':'登录已过期，请重新登录');
  });
+ app.addHook('onSend',async(req,reply,payload)=>{reply.header('Cache-Control','private, no-store');return payload;});
  app.get('/api/health',async()=>{await rows('SELECT 1');return {ok:true};});
  app.post('/api/auth/login',{config:{rateLimit:{max:8,timeWindow:'1 minute'}}},async req=>{const {password}=z.object({password:z.string().min(1).max(256)}).parse(req.body);const expected=process.env.PARENT_PASSWORD;if(!expected||expected.length<12)throw new HttpError(503,'请先配置至少 12 位的家长密码');if(!timingSafeEqual(Buffer.from(hash(password)),Buffer.from(hash(expected))))throw new HttpError(401,'密码不正确');return session('family','parent',null);});
  app.post('/api/auth/logout',async req=>{await run('DELETE FROM sessions WHERE token_hash=?',[hash(req.headers.authorization!.replace(/^Bearer /,''))]);return {ok:true};});
@@ -39,10 +44,26 @@ export function buildApp(){
  app.post('/api/children',async req=>{parent(req);const v=z.object({name:z.string().trim().min(1).max(40),grade:z.string().max(40).default('')}).parse(req.body);const cid=randomUUID();await run('INSERT INTO children(id,family_id,name,grade) VALUES(?,?,?,?)',[cid,req.session.family_id,v.name,v.grade]);return {id:cid,...v};});
  app.post('/api/pairing',async req=>{parent(req);const {childId:cid}=z.object({childId:id.nullable().default(null)}).parse(req.body);if(cid)await ownChildren([cid],req.session.family_id);const code=randomBytes(6).toString('hex').toUpperCase();await run('DELETE FROM pairing_codes WHERE expires_at<UTC_TIMESTAMP()');await run('INSERT INTO pairing_codes(code_hash,family_id,child_id,expires_at) VALUES(?,?,?,DATE_ADD(UTC_TIMESTAMP(),INTERVAL 10 MINUTE))',[hash(code),req.session.family_id,cid]);return {code,expiresIn:600};});
  app.post('/api/auth/pair',{config:{rateLimit:{max:10,timeWindow:'1 minute'}}},async req=>{const {code}=z.object({code:z.string().trim().length(12).transform(v=>v.toUpperCase())}).parse(req.body);const record=await transaction(async db=>{const [p]=await rows('SELECT * FROM pairing_codes WHERE code_hash=? AND expires_at>UTC_TIMESTAMP() FOR UPDATE',[hash(code)],db);if(!p)throw new HttpError(400,'配对码无效或已过期');await run('DELETE FROM pairing_codes WHERE code_hash=?',[hash(code)],db);return p;});return session(record.family_id,'child',record.child_id);});
+ app.get('/api/family-link',async req=>{parent(req);const [link]=await rows('SELECT id,created_at FROM family_links WHERE family_id=?',[req.session.family_id]);return link?{enabled:true,id:link.id,createdAt:link.created_at}:{enabled:false};});
+ app.post('/api/family-link',async req=>{parent(req);const {reset}=z.object({reset:z.boolean().default(false)}).parse(req.body??{});return transaction(async db=>{
+  await rows('SELECT id FROM families WHERE id=? FOR UPDATE',[req.session.family_id],db);
+  const [old]=await rows('SELECT id FROM family_links WHERE family_id=?',[req.session.family_id],db);if(old&&!reset)throw new HttpError(409,'共享链接已存在；重新生成会撤销旧链接');
+  const token='family_'+randomBytes(32).toString('base64url'),linkId=randomUUID();
+  if(old)await run('UPDATE family_links SET id=?,token_hash=?,created_at=CURRENT_TIMESTAMP WHERE family_id=?',[linkId,hash(token),req.session.family_id],db);
+  else await run('INSERT INTO family_links(family_id,id,token_hash) VALUES(?,?,?)',[req.session.family_id,linkId,hash(token)],db);
+  return {id:linkId,token};
+ });});
+ app.delete('/api/family-link',async req=>{parent(req);await transaction(async db=>{await rows('SELECT id FROM families WHERE id=? FOR UPDATE',[req.session.family_id],db);await run('DELETE FROM family_links WHERE family_id=?',[req.session.family_id],db);});return {ok:true};});
  app.get('/api/devices',async req=>{parent(req);return rows('SELECT token_hash AS id,child_id,created_at,expires_at FROM sessions WHERE family_id=? AND role=\'child\' AND expires_at>UTC_TIMESTAMP()',[req.session.family_id]);});
  app.delete('/api/devices/:id',async req=>{parent(req);const tokenHash=z.string().regex(/^[a-f0-9]{64}$/).parse((req.params as any).id);await run('DELETE FROM sessions WHERE token_hash=? AND family_id=? AND role=\'child\'',[tokenHash,req.session.family_id]);return {ok:true};});
  app.get('/api/imports',async req=>{parent(req);return (await rows('SELECT * FROM imports WHERE family_id=? ORDER BY created_at DESC LIMIT 100',[req.session.family_id])).map(importView);});
  app.get('/api/imports/:id',async req=>{parent(req);const [v]=await rows('SELECT * FROM imports WHERE id=? AND family_id=?',[childId((req.params as any).id),req.session.family_id]);if(!v)throw new HttpError(404,'导入记录不存在');const attachments=await rows('SELECT id,name,mime FROM attachments WHERE import_id=?',[v.id]);return {...importView(v),attachments,billing:await billingSummary(v.id)};});
+ app.post('/api/imports/manual',async req=>{
+  parent(req);const input=z.object({text:z.string().trim().min(1).max(50000),workDate:day,childIds:z.array(id).min(1).max(20)}).parse(req.body);
+  await ownChildren(input.childIds,req.session.family_id);const result=manualTasks(input.text,input.workDate),iid=randomUUID();
+  await run("INSERT INTO imports(id,family_id,child_ids,work_date,source_text,status,result,import_kind) VALUES(?,?,?,?,?,'review',?,'manual')",[iid,req.session.family_id,JSON.stringify(input.childIds),input.workDate,input.text,JSON.stringify(result)]);
+  return {id:iid};
+ });
  app.post('/api/imports',async req=>{
   parent(req);const fields:Record<string,string>={};const files:{id:string;name:string;mime:string;path:string}[]=[];await mkdir(dataDir,{recursive:true});let source='';const importId=randomUUID();let committed=false;
   try {
@@ -78,6 +99,7 @@ export function buildApp(){
  });
  app.put('/api/assignments/:id/complete',async req=>{const aid=childId((req.params as any).id);const v=z.object({completed:z.boolean(),revision:z.number().int().positive()}).parse(req.body);const r=await run(`UPDATE assignments SET completed=?,completed_at=CASE WHEN ? THEN COALESCE(completed_at,UTC_TIMESTAMP()) ELSE NULL END,updated=FALSE WHERE id=? AND family_id=? AND revision=?${req.session.child_id?' AND child_id=?':''}`,[v.completed,v.completed,aid,req.session.family_id,v.revision,...(req.session.child_id?[req.session.child_id]:[])]);if(!r.affectedRows)throw new HttpError(409,'作业已变化，请刷新');return {ok:true};});
  app.put('/api/assignments/:id',async req=>{parent(req);const v=item.extend({revision:z.number().int().positive()}).parse(req.body);const r=await run('UPDATE assignments SET subject=?,content=?,due_date=?,materials=?,priority=?,priority_reason=?,completed=FALSE,completed_at=NULL,updated=TRUE,revision=revision+1 WHERE id=? AND family_id=? AND revision=?',[v.subject,v.content,v.dueDate,v.materials,v.priority,v.priorityReason,childId((req.params as any).id),req.session.family_id,v.revision]);if(!r.affectedRows)throw new HttpError(409,'作业已变化，请刷新');return {ok:true};});
+ app.delete('/api/assignments/:id',async req=>{parent(req);const {revision}=z.object({revision:z.number().int().positive()}).parse(req.body);const r=await run('DELETE FROM assignments WHERE id=? AND family_id=? AND revision=?',[childId((req.params as any).id),req.session.family_id,revision]);if(!r.affectedRows)throw new HttpError(409,'作业已变化或已删除，请刷新');return {ok:true};});
  app.get('/api/assignments/:id/attachments',async req=>{const aid=childId((req.params as any).id);const found=await rows(`SELECT import_id FROM assignments WHERE id=? AND family_id=?${req.session.child_id?' AND child_id=?':''}`,[aid,req.session.family_id,...(req.session.child_id?[req.session.child_id]:[])]);if(!found.length)throw new HttpError(404,'作业不存在');return rows('SELECT id,name,mime FROM attachments WHERE import_id=?',[found[0].import_id]);});
  app.get('/api/attachments/:id',async(req,reply)=>{const aid=childId((req.params as any).id);const [a]=await rows('SELECT * FROM attachments WHERE id=? AND family_id=?',[aid,req.session.family_id]);if(!a)throw new HttpError(404,'附件不存在');if(req.session.role==='child'){const allowed=await rows(`SELECT id FROM assignments WHERE import_id=? AND family_id=?${req.session.child_id?' AND child_id=?':''} LIMIT 1`,[a.import_id,req.session.family_id,...(req.session.child_id?[req.session.child_id]:[])]);if(!allowed.length)throw new HttpError(403,'尚无权查看此附件');}return reply.header('Cache-Control','private, no-store').header('X-Content-Type-Options','nosniff').type(a.mime).send(await readFile(a.path));});
  return app;

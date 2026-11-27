@@ -7,7 +7,15 @@ export class HttpError extends Error { constructor(public statusCode:number,mess
 export function parseResult(s:string):Draft { return resultSchema.parse(JSON.parse(s)); }
 export function parseGeneratedResult(s:string):Draft {
   const generated=resultSchema.extend({items:z.array(item.extend({priority:z.enum(['high','normal'])})).max(100)});
-  return generated.parse(JSON.parse(s));
+  const result=generated.parse(JSON.parse(s));
+  const seen=new Set<string>();
+  result.items=result.items.filter(task=>{
+    // Only identical generated items are duplicates. Different requirements survive.
+    const key=JSON.stringify([task.subject,task.content,task.priority,task.priorityReason,task.dueDate,task.materials,task.warning]);
+    if(seen.has(key))return false;
+    seen.add(key);return true;
+  });
+  return result;
 }
 export function today() {return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());}
 export function extractText(name:string, bytes:Buffer):string {

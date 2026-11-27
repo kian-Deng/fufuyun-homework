@@ -1,20 +1,25 @@
 <script setup lang="ts">
-import {computed,ref} from 'vue';
-import {sortTasks,type Task} from './tasks';
+import {computed,ref,watch} from 'vue';
+import {sortTasks,subjectCounts,filterTasks,type Task} from './tasks';
 const props=defineProps<{tasks:Task[];busy:boolean;name:string}>();
 const emit=defineEmits<{toggle:[task:Task];details:[task:Task]}>();
 const expanded=ref(false);
-const sorted=computed(()=>sortTasks(props.tasks));
+const subject=ref('');
+watch(()=>props.name,()=>{subject.value='';expanded.value=false;});
+const subjects=computed(()=>subjectCounts(props.tasks));
+watch(subjects,values=>{if(subject.value&&!values.some(s=>s.subject===subject.value))subject.value='';});
+const sorted=computed(()=>sortTasks(filterTasks(props.tasks,subject.value)));
 const sections=computed(()=>[
   {key:'high',title:'优先处理',items:sorted.value.filter(t=>!t.completed&&t.priority==='high')},
   {key:'normal',title:'其他任务',items:sorted.value.filter(t=>!t.completed&&t.priority!=='high')}
 ]);
 const finished=computed(()=>sorted.value.filter(t=>t.completed));
-const pending=computed(()=>props.tasks.length-finished.value.length);
+const pending=computed(()=>props.tasks.filter(t=>!t.completed).length);
 </script>
 
 <template>
- <div class="child-task-heading"><h1>{{name||'我'}}的任务</h1><span>{{pending?'还有 '+pending+' 项':'未完成任务已清空'}}</span></div>
+ <div class="child-task-heading"><span>{{pending?'还有 '+pending+' 项未完成':'未完成任务已清空'}}</span></div>
+ <div class="subject-filters no-print" role="group" aria-label="筛选学科"><button :aria-pressed="subject===''" :class="{active:subject===''}" @click="subject=''">全部 {{pending}}</button><button v-for="s in subjects" :key="s.subject" :aria-pressed="subject===s.subject" :class="{active:subject===s.subject}" @click="subject=s.subject">{{s.subject}} {{s.pending}}</button></div>
  <section v-for="section in sections" :key="section.key" class="child-task-section" :class="{'priority-section':section.key==='high'}">
   <h2>{{section.title}} <small>{{section.items.length}} 项</small></h2>
   <p v-if="!section.items.length" class="child-empty">{{section.key==='high'?'优先任务都完成了，看看下面还有什么。':'暂无其他任务。'}}</p>
